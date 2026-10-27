@@ -18,6 +18,7 @@ import {
   webhookFilterDraftsChanged,
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
+import { onceRunAt, onceRunAtFields } from "@t3tools/client-runtime/scheduled-task-once";
 
 import {
   resolveProjectSettings,
@@ -52,7 +53,7 @@ export function validateScheduledTasksSearch(raw: Record<string, unknown>) {
   };
 }
 
-export type ScheduleMode = "fixed" | "interval" | "webhook";
+export type ScheduleMode = "fixed" | "once" | "interval" | "webhook";
 export type WorkspaceMode = "root" | "worktree" | "existing_worktree";
 
 export interface DraftState {
@@ -64,6 +65,9 @@ export interface DraftState {
   readonly intervalMinutes: string;
   readonly timeOfDay: string;
   readonly weekdays: ReadonlySet<number>;
+  /** "YYYY-MM-DD" of a one-time run; `timeOfDay` holds its time. */
+  readonly onceDate: string;
+  readonly savedOnceAt: string | null;
   readonly projectId: string;
   readonly threadId: string;
   readonly workspaceMode: WorkspaceMode;
@@ -182,6 +186,10 @@ export function scheduleFromDraft(draft: DraftState): ScheduledTaskUpsertSchedul
         : {}),
     };
   }
+  if (draft.scheduleMode === "once") {
+    const at = onceRunAt(draft.onceDate, draft.timeOfDay, draft.savedOnceAt);
+    return at === null ? null : { type: "once", at };
+  }
   if (draft.scheduleMode === "interval") {
     const everyMs = Math.round(Number(draft.intervalMinutes) * 60_000);
     return { type: "interval", everyMs };
@@ -201,17 +209,19 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     schedule.type === "fixed_time" && schedule.weekdays && schedule.weekdays.length > 0
       ? new Set(schedule.weekdays)
       : new Set([0, 1, 2, 3, 4, 5, 6]);
+  const once = schedule.type === "once" ? onceRunAtFields(schedule.at) : null;
   return {
     editingId: task.id,
     title: task.title,
     prompt: task.prompt,
     enabled: task.enabled,
-    scheduleMode:
-      schedule.type === "interval" ? "interval" : schedule.type === "webhook" ? "webhook" : "fixed",
+    scheduleMode: schedule.type === "fixed_time" ? "fixed" : schedule.type,
     intervalMinutes:
       schedule.type === "interval" ? String(Math.max(1, schedule.everyMs / 60_000)) : "15",
-    timeOfDay: schedule.type === "fixed_time" ? schedule.timeOfDay : "09:00",
+    timeOfDay: schedule.type === "fixed_time" ? schedule.timeOfDay : (once?.time ?? "09:00"),
     weekdays,
+    onceDate: once?.date ?? "",
+    savedOnceAt: schedule.type === "once" ? schedule.at : null,
     projectId: task.projectId,
     threadId: task.threadId ?? "",
     workspaceMode: task.workspaceStrategy.type,

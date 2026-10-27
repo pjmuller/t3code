@@ -51,6 +51,7 @@ import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScroll
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { webhookAddress } from "@t3tools/client-runtime/webhook-address";
+import { dateField, tomorrowDateField } from "@t3tools/client-runtime/scheduled-task-once";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { usePreparedConnection } from "../../state/session";
 import { buildModelOptions } from "../../lib/modelOptions";
@@ -106,8 +107,19 @@ const DAYS = [
   { index: 0, label: "Sun" },
 ] as const;
 
+function formatOnceTime(value: string): string {
+  return new Date(value).toLocaleString([], {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function describeSchedule(task: ScheduledTask): string {
   if (task.schedule.type === "webhook") return "On webhook";
+  if (task.schedule.type === "once") return `Once · ${formatOnceTime(task.schedule.at)}`;
   if (task.schedule.type === "interval") return formatScheduledTaskInterval(task.schedule.everyMs);
   const days = task.schedule.weekdays?.length ? repeatLabel(task.schedule.weekdays) : "Every day";
   return `${days} at ${formatTime(task.schedule.timeOfDay)}`;
@@ -131,6 +143,11 @@ function timePickerValue(value: string): Date {
     0,
   );
   return time;
+}
+
+function datePickerValue(value: string): Date {
+  const date = new Date(`${value}T00:00`);
+  return Number.isNaN(date.getTime()) ? new Date() : date;
 }
 
 function repeatLabel(weekdays: ReadonlyArray<number>): string {
@@ -677,6 +694,7 @@ function TaskForm({
   });
   const submissionPending = useRef(false);
   const [timePickerOpen, setTimePickerOpen] = useState(false);
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
   const taskMissing =
     draft.task !== null &&
     tasks.data !== null &&
@@ -954,25 +972,79 @@ function TaskForm({
               variant="card"
               options={[
                 { value: "fixed_time", label: "At a time" },
+                { value: "once", label: "Once" },
                 { value: "interval", label: "Interval" },
                 { value: "webhook", label: "On webhook" },
               ]}
               selected={draft.schedule.mode}
               onSelect={(mode) => {
                 setTimePickerOpen(false);
+                setDatePickerOpen(false);
                 setDraft({
                   ...draft,
                   prompt:
                     mode === "webhook" && !draft.prompt.trim()
                       ? DEFAULT_WEBHOOK_PROMPT
                       : draft.prompt,
-                  schedule: { ...draft.schedule, mode },
+                  schedule: {
+                    ...draft.schedule,
+                    mode,
+                    onceDate:
+                      mode === "once" && !draft.schedule.onceDate
+                        ? tomorrowDateField(Date.now())
+                        : draft.schedule.onceDate,
+                  },
                 });
               }}
             />
           </View>
-          {draft.schedule.mode === "fixed_time" ? (
+          {draft.schedule.mode === "fixed_time" || draft.schedule.mode === "once" ? (
             <>
+              {draft.schedule.mode === "once" ? (
+                <>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Date, ${draft.schedule.onceDate}`}
+                    onPress={() => setDatePickerOpen((open) => !open)}
+                    className="min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3 active:opacity-70"
+                  >
+                    <Text textRole="body" className="text-foreground">
+                      Date
+                    </Text>
+                    <Text
+                      textRole="footnote"
+                      className="min-w-0 flex-1 text-right text-foreground-muted"
+                    >
+                      {datePickerValue(draft.schedule.onceDate).toLocaleDateString([], {
+                        weekday: "short",
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })}
+                    </Text>
+                    <SymbolView
+                      name="chevron.right"
+                      size={14}
+                      tintColorClassName="accent-chevron"
+                      type="monochrome"
+                    />
+                  </Pressable>
+                  {datePickerOpen ? (
+                    <DateTimePicker
+                      value={datePickerValue(draft.schedule.onceDate)}
+                      mode="date"
+                      display={Platform.OS === "ios" ? "spinner" : "default"}
+                      onDismiss={() => setDatePickerOpen(false)}
+                      onValueChange={(_, selected) => {
+                        setDraft({
+                          ...draft,
+                          schedule: { ...draft.schedule, onceDate: dateField(selected) },
+                        });
+                      }}
+                    />
+                  ) : null}
+                </>
+              ) : null}
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Time, ${formatTime(draft.schedule.timeOfDay)}`}
@@ -1007,46 +1079,48 @@ function TaskForm({
                   }}
                 />
               ) : null}
-              <SelectRow
-                label="Repeat"
-                value={repeatLabel(draft.schedule.weekdays)}
-                borderTop
-                actions={[
-                  {
-                    id: "every_day",
-                    title: "Every day",
-                    state: draft.schedule.weekdays.length === 7 ? "on" : undefined,
-                  },
-                  {
-                    id: "weekdays",
-                    title: "Weekdays",
-                    state: repeatLabel(draft.schedule.weekdays) === "Weekdays" ? "on" : undefined,
-                  },
-                  ...DAYS.map((day) => ({
-                    id: String(day.index),
-                    title: day.label,
-                    attributes: { keepsMenuPresented: true },
-                    state: draft.schedule.weekdays.includes(day.index)
-                      ? ("on" as const)
-                      : undefined,
-                  })),
-                ]}
-                onSelect={(id) => {
-                  const weekdays =
-                    id === "every_day"
-                      ? DAYS.map((day) => day.index)
-                      : id === "weekdays"
-                        ? [1, 2, 3, 4, 5]
-                        : (() => {
-                            const day = DAYS.find((item) => String(item.index) === id);
-                            if (!day) return draft.schedule.weekdays;
-                            return draft.schedule.weekdays.includes(day.index)
-                              ? draft.schedule.weekdays.filter((index) => index !== day.index)
-                              : [...draft.schedule.weekdays, day.index];
-                          })();
-                  setDraft({ ...draft, schedule: { ...draft.schedule, weekdays } });
-                }}
-              />
+              {draft.schedule.mode === "fixed_time" ? (
+                <SelectRow
+                  label="Repeat"
+                  value={repeatLabel(draft.schedule.weekdays)}
+                  borderTop
+                  actions={[
+                    {
+                      id: "every_day",
+                      title: "Every day",
+                      state: draft.schedule.weekdays.length === 7 ? "on" : undefined,
+                    },
+                    {
+                      id: "weekdays",
+                      title: "Weekdays",
+                      state: repeatLabel(draft.schedule.weekdays) === "Weekdays" ? "on" : undefined,
+                    },
+                    ...DAYS.map((day) => ({
+                      id: String(day.index),
+                      title: day.label,
+                      attributes: { keepsMenuPresented: true },
+                      state: draft.schedule.weekdays.includes(day.index)
+                        ? ("on" as const)
+                        : undefined,
+                    })),
+                  ]}
+                  onSelect={(id) => {
+                    const weekdays =
+                      id === "every_day"
+                        ? DAYS.map((day) => day.index)
+                        : id === "weekdays"
+                          ? [1, 2, 3, 4, 5]
+                          : (() => {
+                              const day = DAYS.find((item) => String(item.index) === id);
+                              if (!day) return draft.schedule.weekdays;
+                              return draft.schedule.weekdays.includes(day.index)
+                                ? draft.schedule.weekdays.filter((index) => index !== day.index)
+                                : [...draft.schedule.weekdays, day.index];
+                            })();
+                    setDraft({ ...draft, schedule: { ...draft.schedule, weekdays } });
+                  }}
+                />
+              ) : null}
             </>
           ) : draft.schedule.mode === "webhook" ? (
             <>
@@ -1355,7 +1429,9 @@ function EnvironmentTasks({
                   ? " · Paused"
                   : task.nextRunAt
                     ? ` · ${formatNextScheduledTaskRun(task.nextRunAt, now)}`
-                    : ""}
+                    : task.schedule.type === "once" && task.lastRunAt
+                      ? ` · Ran ${formatOnceTime(task.lastRunAt)}`
+                      : ""}
               </Text>
               {task.lastRunError ? (
                 <Text className="text-sm text-danger-foreground" numberOfLines={2}>

@@ -55,6 +55,10 @@
       "types": "./src/secretRequest.ts",
       "default": "./src/secretRequest.ts"
     },
+    "./scheduled-task-once": {
+      "types": "./src/scheduledTaskOnce.ts",
+      "default": "./src/scheduledTaskOnce.ts"
+    },
     "./scheduled-task-webhook": {
       "types": "./src/scheduledTaskWebhook.ts",
       "default": "./src/scheduledTaskWebhook.ts"

@@ -151,6 +151,18 @@ describe("editing scheduled task branch settings", () => {
   });
 });
 
+it("round-trips a one-time run and keeps a saved instant the form still shows", () => {
+  const at = "2026-10-31T07:00:30.000Z";
+  const draft = taskToDraft({ ...legacyTask, schedule: { type: "once", at } });
+  expect(draft.scheduleMode).toBe("once");
+  expect(scheduleFromDraft(draft)).toEqual({ type: "once", at });
+
+  const moved = scheduleFromDraft({ ...draft, timeOfDay: "23:15" });
+  const local = moved?.type === "once" ? new Date(moved.at) : null;
+  expect([local?.getHours(), local?.getMinutes(), local?.getSeconds()]).toEqual([23, 15, 0]);
+  expect(scheduleFromDraft({ ...draft, onceDate: "2026-02-30" })).toBeNull();
+});
+
 describe("webhook scheduled tasks", () => {
   const signature = { header: "x-signature", encoding: "base64", prefix: "" } as const;
   const webhookTask: ScheduledTask = {

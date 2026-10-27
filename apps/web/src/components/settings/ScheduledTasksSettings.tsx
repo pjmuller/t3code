@@ -25,6 +25,7 @@ import type {
   ScheduledTaskWebhookDeliverySummary,
   ThreadId,
 } from "@t3tools/contracts";
+import type { TimestampFormat } from "@t3tools/contracts/settings";
 import {
   DEFAULT_WEBHOOK_PROMPT,
   emptyWebhookFilterDraft,
@@ -33,6 +34,7 @@ import {
   WEBHOOK_FILTER_OPS,
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
+import { tomorrowDateField } from "@t3tools/client-runtime/scheduled-task-once";
 import {
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   MAX_WEBHOOK_FILTERS,
@@ -45,8 +47,8 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 
-import { formatRelativeTime } from "../../timestampFormat";
-import { useEnvironmentSettings } from "../../hooks/useSettings";
+import { formatRelativeTime, parseTimestampDate, resolveHour12 } from "../../timestampFormat";
+import { useClientSettings, useEnvironmentSettings } from "../../hooks/useSettings";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import {
   applyProviderInstanceSettings,
@@ -139,6 +141,8 @@ const EMPTY_DRAFT: DraftState = {
   intervalMinutes: "15",
   timeOfDay: "09:00",
   weekdays: new Set([1, 2, 3, 4, 5]),
+  onceDate: "",
+  savedOnceAt: null,
   projectId: "",
   threadId: "",
   workspaceMode: "worktree",
@@ -286,8 +290,20 @@ function splitModelKey(value: string): ModelSelection | null {
   };
 }
 
-export function scheduleLabel(schedule: ScheduledTaskSchedule): string {
+function scheduleLabel(schedule: ScheduledTaskSchedule, timestampFormat: TimestampFormat): string {
   if (schedule.type === "webhook") return "On webhook";
+  if (schedule.type === "once") {
+    const at = parseTimestampDate(schedule.at);
+    if (!at) return "Once";
+    return `Once · ${at.toLocaleString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: resolveHour12(timestampFormat),
+    })}`;
+  }
   if (schedule.type === "interval") {
     const minutes = schedule.everyMs / 60_000;
     return Number.isInteger(minutes)
@@ -302,6 +318,11 @@ export function scheduleLabel(schedule: ScheduledTaskSchedule): string {
         ? "Weekdays"
         : weekdays.map((day) => WEEKDAY_LABELS[day]).join(", ");
   return `${days} at ${schedule.timeOfDay}`;
+}
+
+export function ScheduleLabel(props: { schedule: ScheduledTaskSchedule }) {
+  const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
+  return scheduleLabel(props.schedule, timestampFormat);
 }
 
 /** formatRelativeTime handles only the past; upcoming runs need future labels. */
@@ -730,7 +751,7 @@ function ScheduledTaskRow({
       status={
         <div className="flex flex-wrap items-center gap-2">
           <span>
-            {scheduleLabel(task.schedule)} ·{" "}
+            <ScheduleLabel schedule={task.schedule} /> ·{" "}
             {!task.enabled ? (
               "Paused"
             ) : isWebhook ? (
@@ -738,6 +759,10 @@ function ScheduledTaskRow({
             ) : task.nextRunAt ? (
               <>
                 Next run <ScheduledRelativeLabel value={task.nextRunAt} />
+              </>
+            ) : task.schedule.type === "once" && task.lastRunAt ? (
+              <>
+                Ran <ScheduledRelativeLabel value={task.lastRunAt} />
               </>
             ) : (
               "Not scheduled"
@@ -1213,6 +1238,7 @@ function ScheduledTaskEditorForm({
     }
     const schedule = scheduleFromDraft(draft);
     if (schedule === null) {
+      if (draft.scheduleMode === "once") reportFailure("Invalid run time", "Pick a date and time.");
       for (const error of webhookDraftErrors(draft)) reportFailure(error.title, error.description);
       return;
     }
@@ -1287,7 +1313,8 @@ function ScheduledTaskEditorForm({
       <DialogHeader>
         <DialogTitle>{draft.editingId ? "Edit task" : "New task"}</DialogTitle>
         <DialogDescription>
-          Run a prompt automatically on an interval, at a fixed time, or when a webhook is called.
+          Run a prompt automatically on an interval, at a fixed time, once, or when a webhook is
+          called.
         </DialogDescription>
       </DialogHeader>
 
@@ -1510,10 +1537,19 @@ function ScheduledTaskEditorForm({
                 value={[draft.scheduleMode]}
                 onValueChange={(values) => {
                   const mode = values[0] as ScheduleMode | undefined;
-                  if (mode === "fixed" || mode === "interval" || mode === "webhook")
+                  if (
+                    mode === "fixed" ||
+                    mode === "once" ||
+                    mode === "interval" ||
+                    mode === "webhook"
+                  )
                     setDraft((current) => ({
                       ...current,
                       scheduleMode: mode,
+                      onceDate:
+                        mode === "once" && !current.onceDate
+                          ? tomorrowDateField(Date.now())
+                          : current.onceDate,
                       prompt:
                         mode === "webhook" && !current.prompt.trim()
                           ? DEFAULT_WEBHOOK_PROMPT
@@ -1522,6 +1558,7 @@ function ScheduledTaskEditorForm({
                 }}
               >
                 <Toggle value="fixed">At a time</Toggle>
+                <Toggle value="once">Once</Toggle>
                 <Toggle value="interval">Every interval</Toggle>
                 <Toggle value="webhook">On webhook</Toggle>
               </ToggleGroup>
@@ -1696,6 +1733,31 @@ function ScheduledTaskEditorForm({
                     </Field>
                   </div>
                 ) : null}
+              </div>
+            ) : draft.scheduleMode === "once" ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Label htmlFor="scheduled-task-once-date">Run on</Label>
+                <Input
+                  type="date"
+                  id="scheduled-task-once-date"
+                  nativeInput
+                  className="w-40"
+                  value={draft.onceDate}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, onceDate: event.target.value }))
+                  }
+                />
+                <span className="text-xs text-muted-foreground">at</span>
+                <Input
+                  type="time"
+                  aria-label="Run time"
+                  nativeInput
+                  className="w-32"
+                  value={draft.timeOfDay}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, timeOfDay: event.target.value }))
+                  }
+                />
               </div>
             ) : draft.scheduleMode === "fixed" ? (
               <div className="flex flex-wrap items-center gap-3">

@@ -20,6 +20,14 @@ describe("scheduleDraftForTask", () => {
     expect(scheduleFromDraft(draft)).toEqual({ type: "interval", everyMs: 60_000 });
   });
 
+  it("round-trips a one-time run and needs a date", () => {
+    const at = "2026-10-31T07:00:00.000Z";
+    const draft = scheduleDraftForTask({ schedule: { type: "once", at } });
+    expect(draft.mode).toBe("once");
+    expect(scheduleFromDraft(draft)).toEqual({ type: "once", at });
+    expect(scheduleFromDraft({ ...DEFAULT_SCHEDULE, mode: "once" })).toBeNull();
+  });
+
   it("round-trips dedupe settings and rejects invalid windows", () => {
     const dedupe = {
       replayKey: "{{headers.delivery-id}}",

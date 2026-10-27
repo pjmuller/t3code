@@ -26,6 +26,14 @@ describe("scheduled task schedule calculation", () => {
     expect(parts?.minute).toBe(0);
   });
 
+  it("runs a one-time schedule only before its time", () => {
+    const schedule = { type: "once", at: "2026-10-31T08:00:00+01:00" } as const;
+    const before = nextScheduledRunAt(schedule, DateTime.makeUnsafe("2026-10-31T06:59:59Z"));
+    expect(before && DateTime.formatIso(before)).toBe("2026-10-31T07:00:00.000Z");
+    expect(nextScheduledRunAt(schedule, DateTime.makeUnsafe("2026-10-31T07:00:00Z"))).toBeNull();
+    expect(nextScheduledRunAt({ type: "once", at: "soon" }, DateTime.makeUnsafe(0))).toBeNull();
+  });
+
   it("compares schedules structurally", () => {
     expect(
       isSameSchedule({ type: "interval", everyMs: 60_000 }, { type: "interval", everyMs: 60_000 }),
@@ -73,6 +81,18 @@ describe("scheduled task schedule calculation", () => {
       isSameSchedule(
         { type: "interval", everyMs: 60_000 },
         { type: "fixed_time", timeOfDay: "09:00" },
+      ),
+    ).toBe(false);
+    expect(
+      isSameSchedule(
+        { type: "once", at: "2026-10-31T08:00:00+01:00" },
+        { type: "once", at: "2026-10-31T07:00:00.000Z" },
+      ),
+    ).toBe(true);
+    expect(
+      isSameSchedule(
+        { type: "once", at: "2026-10-31T08:00:00Z" },
+        { type: "once", at: "2026-10-31T08:01:00Z" },
       ),
     ).toBe(false);
   });

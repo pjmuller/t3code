@@ -16,7 +16,7 @@ import {
 
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { cn } from "../../lib/utils";
-import { ScheduledRelativeLabel, scheduleLabel } from "../settings/ScheduledTasksSettings";
+import { ScheduledRelativeLabel, ScheduleLabel } from "../settings/ScheduledTasksSettings";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -40,11 +40,16 @@ const STATUS_DOT_CLASS: Record<ScheduledTask["lastRunStatus"], string> = {
 function taskScheduleLine(task: ScheduledTask) {
   return (
     <>
-      {scheduleLabel(task.schedule)}
+      <ScheduleLabel schedule={task.schedule} />
       {task.enabled && task.nextRunAt !== null ? (
         <>
           {" · next "}
           <ScheduledRelativeLabel value={task.nextRunAt} />
+        </>
+      ) : task.enabled && task.schedule.type === "once" && task.lastRunAt ? (
+        <>
+          {" · ran "}
+          <ScheduledRelativeLabel value={task.lastRunAt} />
         </>
       ) : task.enabled ? (
         ""

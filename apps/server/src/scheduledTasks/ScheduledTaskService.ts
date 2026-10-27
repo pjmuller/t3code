@@ -1091,6 +1091,14 @@ export const layer = Layer.effect(
               ),
             }
           : input.schedule;
+      // A spent one-time task stays editable while its run time is unchanged.
+      if (
+        schedule.type === "once" &&
+        (existingTask === null || !isSameSchedule(existingTask.schedule, schedule)) &&
+        nextScheduledRunAt(schedule, now) === null
+      ) {
+        return yield* taskError("A one-time task needs a run time in the future.", { taskId: id });
+      }
       const webhook =
         input.schedule.type === "webhook"
           ? yield* Effect.gen(function* () {

@@ -1,5 +1,6 @@
 import { MIN_SCHEDULED_TASK_INTERVAL_MS, type ScheduledTaskSchedule } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 
 const MINUTE_MS = 60_000;
 
@@ -9,11 +10,19 @@ function parseTimeOfDay(value: string): { hour: number; minute: number } | null 
   return { hour: Number(match[1]), minute: Number(match[2]) };
 }
 
+function onceRunAt(value: string): DateTime.Utc | null {
+  return Option.getOrNull(DateTime.make(value));
+}
+
 export function nextScheduledRunAt(
   schedule: ScheduledTaskSchedule,
   from: DateTime.DateTime,
 ): DateTime.DateTime | null {
   if (schedule.type === "webhook") return null;
+  if (schedule.type === "once") {
+    const at = onceRunAt(schedule.at);
+    return at !== null && DateTime.toEpochMillis(at) > DateTime.toEpochMillis(from) ? at : null;
+  }
   if (schedule.type === "interval") {
     // Intervals advance elapsed time, including across daylight-saving changes.
     return DateTime.addDuration(from, Math.max(schedule.everyMs, MIN_SCHEDULED_TASK_INTERVAL_MS));
@@ -48,6 +57,12 @@ export function isSameSchedule(a: ScheduledTaskSchedule, b: ScheduledTaskSchedul
     return b.type === "interval" && a.everyMs === b.everyMs;
   }
   if (a.type === "webhook") return b.type === "webhook";
+  if (a.type === "once") {
+    if (b.type !== "once") return false;
+    const aAt = onceRunAt(a.at);
+    const bAt = onceRunAt(b.at);
+    return aAt !== null && bAt !== null && DateTime.Equivalence(aAt, bAt);
+  }
   if (b.type !== "fixed_time") return false;
   // Compare parsed times so padded-hour edits do not reschedule pending runs.
   const aTime = parseTimeOfDay(a.timeOfDay);

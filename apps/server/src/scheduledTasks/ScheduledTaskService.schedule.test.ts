@@ -5,7 +5,10 @@ import { ScheduledTaskUpsertInput } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -165,5 +168,110 @@ it.effect("keeps the task list order when a toggle or edit rewrites updated_at",
       yield* service.upsert(yield* decodeUpsertInput({ ...edit, enabled: false }));
       expect(yield* listedIds).toEqual(order);
     }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("runs a one-time task once, also when the environment was off at its time", () =>
+  Effect.gen(function* () {
+    const hour = 3_600_000;
+    const isoAt = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+    const start = Date.parse("2026-10-30T12:00:00.000Z");
+    yield* TestClock.setTime(start);
+    const launches = yield* Queue.unbounded<string>();
+    const layerDependencies = Layer.mergeAll(
+      NodeCrypto.layer,
+      Scheduler.layer,
+      Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+        launch: (input) =>
+          Queue.offer(launches, input.title).pipe(
+            Effect.as({ threadId: "thread-once", resumed: false } as never),
+          ),
+      }),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/projects",
+        isScratchProject: () => Effect.succeed(false),
+      }),
+      Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+      Layer.mock(SecretRequests.SecretRequests)({}),
+    );
+    const serverRun = <A, E>(
+      program: (
+        service: ScheduledTaskService.ScheduledTaskService["Service"],
+      ) => Effect.Effect<A, E>,
+    ) =>
+      Effect.gen(function* () {
+        return yield* program(yield* ScheduledTaskService.ScheduledTaskService);
+      }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
+    const save = (
+      service: ScheduledTaskService.ScheduledTaskService["Service"],
+      fields: { title: string; at: number; id?: string },
+    ) =>
+      decodeUpsertInput({
+        ...(fields.id === undefined ? {} : { id: fields.id }),
+        title: fields.title,
+        prompt: "Check the deploy.",
+        enabled: true,
+        schedule: { type: "once", at: isoAt(fields.at) },
+        projectId: "project-once",
+        workspaceStrategy: { type: "root" },
+        modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      }).pipe(Effect.flatMap(service.upsert));
+    const completedRun = (
+      service: ScheduledTaskService.ScheduledTaskService["Service"],
+      id: string,
+    ) =>
+      service.subscribeList().pipe(
+        Stream.map(({ tasks }) => tasks.find((task) => task.id === id)),
+        Stream.filter((task) => task?.lastRunStatus === "succeeded"),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+
+    const dueAt = start + 2 * 60_000;
+    const now = dueAt + 2 * 60_000;
+    const late = yield* serverRun((service) =>
+      Effect.gen(function* () {
+        const { task } = yield* save(service, { title: "Deploy check", at: dueAt });
+        expect(task.nextRunAt).toBe(isoAt(dueAt));
+        yield* TestClock.adjust("1 minute");
+        expect(yield* Queue.size(launches)).toBe(0);
+
+        yield* TestClock.adjust("2 minutes");
+        expect(yield* Queue.take(launches)).toBe("Deploy check");
+        const ran = yield* completedRun(service, task.id);
+        expect(ran?.runCount).toBe(1);
+        expect(ran?.nextRunAt).toBeNull();
+        yield* TestClock.setTime(now);
+        expect(yield* Queue.size(launches)).toBe(0);
+
+        yield* service.setEnabled({ id: task.id, enabled: false });
+        const resumed = yield* service.setEnabled({ id: task.id, enabled: true });
+        expect(resumed.task.nextRunAt).toBeNull();
+        const renamed = yield* save(service, { id: task.id, title: "Renamed", at: dueAt });
+        expect(renamed.task.nextRunAt).toBeNull();
+        for (const past of [
+          { id: task.id, title: "Renamed", at: dueAt + 60_000 },
+          { title: "New", at: now },
+        ]) {
+          const failure = yield* save(service, past).pipe(Effect.flip);
+          expect(failure.message).toBe("A one-time task needs a run time in the future.");
+        }
+        return (yield* save(service, { title: "Saturday report", at: now + hour })).task;
+      }),
+    );
+
+    // The environment is off past the run time, then starts again.
+    yield* TestClock.setTime(now + 8 * hour);
+    yield* serverRun((service) =>
+      Effect.gen(function* () {
+        expect(yield* Queue.take(launches)).toBe("Saturday report");
+        const ran = yield* completedRun(service, late.id);
+        expect(ran?.lastRunAt).toBe(isoAt(now + 8 * hour));
+        expect(ran?.nextRunAt).toBeNull();
+        expect(yield* Queue.size(launches)).toBe(0);
+      }),
+    );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

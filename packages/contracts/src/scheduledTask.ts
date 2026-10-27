@@ -45,6 +45,14 @@ const ScheduledTaskFixedTimeSchedule = Schema.Struct({
   ),
 });
 
+const ScheduledTaskOnceSchedule = Schema.Struct({
+  type: Schema.Literal("once"),
+  at: IsoDateTime.annotate({ description: "ISO time with offset, such as 2026-10-31T08:00:00Z." }),
+}).annotate({
+  description:
+    "Run once at this time. Runs when the environment is back if it was off or asleep then.",
+});
+
 const ScheduledTaskWebhookSignatureFields = {
   header: TrimmedNonEmptyString.annotate({
     description: "Header with the signature, such as x-hub-signature-256.",
@@ -166,6 +174,7 @@ const ScheduledTaskUpsertWebhookSchedule = Schema.Struct({
 export const ScheduledTaskSchedule = Schema.Union([
   ScheduledTaskIntervalSchedule,
   ScheduledTaskFixedTimeSchedule,
+  ScheduledTaskOnceSchedule,
   ScheduledTaskWebhookSchedule,
 ]);
 export type ScheduledTaskSchedule = typeof ScheduledTaskSchedule.Type;
@@ -180,6 +189,7 @@ export const ScheduledTaskUpsertSchedule = Schema.Union([
     }),
   }),
   ScheduledTaskFixedTimeSchedule,
+  ScheduledTaskOnceSchedule,
   ScheduledTaskUpsertWebhookSchedule,
 ]);
 export type ScheduledTaskUpsertSchedule = typeof ScheduledTaskUpsertSchedule.Type;
